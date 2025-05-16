@@ -1,0 +1,188 @@
+---
+title: "final_668_project_Samperio"
+output: html_document
+date: "2025-05-15"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r load libraries}
+#install.packages("randomForest")
+#install.packages("readr")
+#install.packages("factoextra")  
+library(factoextra) #screeplot
+library(randomForest)
+library(readr) #read table
+```
+
+```{r load data}
+#my dataset was downloaded as a .txt file with gene expression and some metdata in it
+#first check some lines to not crash 
+lines <- readLines("gene_expression_cancer.txt", n = 500)
+cat(lines, sep="\n")
+header_line_index <- which(grepl("^ID_REF", lines))[1]
+
+header_line <- lines[header_line_index]
+colnames <- strsplit(header_line, "\t")[[1]]
+
+expr <- read.table("gene_expression_cancer.txt", 
+                        sep = "\t", 
+                        header = FALSE, 
+                        skip = header_line_index,
+                        check.names = FALSE, 
+                        stringsAsFactors = FALSE
+                    )
+colnames(expr) <- colnames
+rownames(expr) <- expr$ID_REF
+dim(expr) #288 columns (gene id_ref column is first one and repeated)
+expr$ID_REF <- NULL #delete the extra column of gene row names
+#got desired table with Total number of rows: 22283
+         
+head(expr[, 1:5])   #take a look at some samples
+head(rownames(expr))
+ID_REF<-rownames(expr)
+head(colnames(expr))
+
+
+#need the rest of the metadata, which i created a csv table for
+metadata <- read.csv("breast_cancer_metadata.csv")
+head(metadata)
+```
+
+```{r join sample to accession }
+#check names match
+all(colnames(expr) %in% metadata$GEO.Accession.Number) #false, need to troubleshoot
+setdiff(colnames(expr), metadata$GEO.Accession.Number) #NA?
+any(is.na(colnames(expr))) #true here
+any(is.na(metadata$GEO.Accession.Number)) #false
+#the issue is the first column which is empty..
+expr <- expr[, !is.na(colnames(expr))]
+
+all(colnames(expr) %in% metadata$GEO.Accession.Number) #TRUE
+
+all(colnames(expr) == rownames(metadata)) #false, something wrong
+
+length(colnames(expr))
+length(rownames(metadata))
+
+which(colnames(expr) != rownames(metadata))
+
+colnames(expr) <- trimws(colnames(expr))
+rownames(metadata) <- trimws(rownames(metadata))
+
+all(colnames(expr) == rownames(metadata))
+
+setequal(colnames(expr), rownames(metadata))
+
+setdiff(colnames(expr), rownames(metadata)) 
+setdiff(rownames(metadata), colnames(expr)) #numbers... which is why it was not working
+
+rownames(metadata) <- metadata$GEO.Accession.Number #having issues joining so will set rownames to accession numbers
+
+metadata <- metadata[colnames(expr), ] #reorder so they match!
+
+all(colnames(expr) == rownames(metadata))  # Should be TRUE now
+
+```
+On our metadata, 1=yes, 0=no, time is in months.
+
+Now that the data is clean and organized, can start doing some actual analysis!
+For random forest model, I want to train it to predict relapse (yes or no)
+Also, data has been normalized already.
+```{r Random Forest}
+#first need to transpose data... lied before we need more cleaning
+#samples as rows, genes as columns
+expr_t <- t(expr)
+expr_df <- as.data.frame(expr_t)
+metadata$relapse<-as.factor(metadata$relapse)
+expr_df$relapse <- metadata$relapse
+
+set.seed(123)
+train_idx <- sample(seq_len(nrow(expr_df)), size = 0.7 * nrow(expr_df))
+
+train_data <- expr_df[train_idx, ]
+test_data <- expr_df[-train_idx, ]
+
+#rf_model <- randomForest(relapse ~ ., data = train_data, ntree = 500, importance = TRUE)
+#dataset is too big... maybe start with PCA model to grab most variable components.
+```
+
+```{r PCA }
+#pca_res <- prcomp(expr_df, scale. = TRUE)
+#Error in colMeans(x, na.rm = TRUE) : 'x' must be numeric
+expr_df <- as.data.frame(lapply(expr, function(x) as.numeric(as.character(x))))
+rownames(expr_df) <- rownames(expr)
+#make sure everything is numeric
+
+pca_res <- prcomp(t(expr_df), scale. = TRUE)
+summary(pca_res)
+#about 70% variance is explained by PC1
+
+png("scree_plot.png", width = 1600, height = 1200, res = 300)
+fviz_eig(pca_res, addlabels = TRUE, ylim = c(0, 90))
+dev.off()
+
+var_contrib <- get_pca_var(pca_res)
+top_genes=fviz_contrib(pca_res, choice = "var", axes = 1, top = 200) +
+  labs(title = "Top 200 Genes Contributing to PC1")
+top_genes #cant really see much...still a lot
+
+var_contrib <- get_pca_var(pca_res)
+
+png(filename = "PC1_gene_contrib_plot.png", width = 10, height = 7, units = "in", res = 300)
+print(top_genes)
+dev.off()
+
+pc1_contrib <- var_contrib$contrib[, "Dim.1"]
+names(pc1_contrib) <- rownames(var_contrib$contrib)
+head(names(pc1_contrib))
+top_genes <- names(sort(pc1_contrib, decreasing = TRUE))[1:200]
+top_genes
+
+
+```
+
+```{r Random Forest reduced}
+#subset data
+expr_top200 <- expr_df[top_genes,]
+
+#transpose to have samples as rows
+expr_top200_t <- as.data.frame(t(expr_top200))
+#add relapse column for completeness
+expr_top200_t$relapse <- metadata$relapse
+
+set.seed(123)  #random
+
+#Split indices
+train_idx <- sample(seq_len(nrow(expr_top200_t)), size = 0.7 * nrow(expr_top200_t))
+
+#Split the data
+train_data <- expr_top200_t[train_idx, ]
+test_data <- expr_top200_t[-train_idx, ]
+
+#rf_model <- randomForest(relapse ~ ., data = train_data, ntree = 500, importance = TRUE) #error in eval(predvars,data,env): objetc '207187_at' not found
+colnames(train_data) <- make.names(colnames(train_data))
+colnames(test_data) <- make.names(colnames(test_data))
+train_data$relapse <- as.factor(train_data$relapse)
+test_data$relapse <- as.factor(test_data$relapse)
+
+rf_model <- randomForest(relapse ~ ., data = train_data, ntree = 500, importance = TRUE) #IT WORKEEEDD! built 500 trees
+
+```
+
+now look at results
+```{r rf model results}
+print(rf_model)
+
+p1 <- predict(rf_model, test_data)
+summary(p1)
+
+#check accuracy
+actual <- test_data$relapse
+conf_mat <- table(Predicted = p1, Actual = actual)
+print(conf_mat)
+
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+cat("Test Accuracy:", round(accuracy * 100, 2), "%\n")
+
+```
