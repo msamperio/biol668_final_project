@@ -6,5 +6,4 @@ Online sources referenced:
 1. https://www.r-bloggers.com/2021/04/random-forest-in-r/
 2. https://www.simplilearn.com/tutorials/data-science-tutorial/random-forest-in-r
 
-Link to data (including metadata): [
-](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE2034)
+Link to data (including metadata): (https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE2034)
